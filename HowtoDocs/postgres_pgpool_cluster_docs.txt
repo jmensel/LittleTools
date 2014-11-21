@@ -1,0 +1,318 @@
+Postgres Database Cluster with Pgpool
+Implementation Reference
+John Mensel
+jmensel@gmail.com
+
+
+This isn't a HowTO, per se, but is rather intended to be a reference doc that enumerates basic management tasks for a postgres database cluster using pgpool for load balancing.  
+
+NOTICE:  Use the "postgres" user on the app servers and database servers to do all of this stuff. 
+	If you use your own user account, NOTHING WILL WORK RIGHT.  I promise.
+		$ sudo su - postgres
+	...will do the trick
+	You'll only need your own account for stuff that needs sudo rights.
+
+Overview:
+	The production postgres database environment is a master->slave configuration.  Client connections are handled by Pgpool.  
+	Pgpool runs in a HA	configuration on app-server1 and app-server2, with app-server1 as the master.  
+	Pgpool is fairly clever, and is configured to distribute SELECT queries (and other read-only stuff) to the slave server as well as the master.
+	Pgpool is also handling failover triggering...if the master fails, pgpool detects it, disables the master node, and promotes the slave.
+	The failed master (in what we call a "degenerate" state) must then be manually recovered.  Step-by-step directions are below.
+
+Postgres Master-Slave Replication was implemented as per the documentation in:
+		http://wiki.postgresql.org/wiki/Streaming_Replication
+
+Pgpool was configured based upon the documentation in:
+		http://www.pgpool.net/docs/latest/pgpool-en.html#config
+
+##################
+
+Credentials:
+	
+Database user for replication is below.  This user account is valid on postgres-db1+2.  This user is also utilized by pgpool on app-server1+2 for its replication tests.  If this user's password is changed, then it must be updated in /etc/pgpool-II/pgpool.conf on all pgpool servers.
+	replication : sompassword
+
+The "dbadmin" user has root rights over the database servers:
+	dbadmin : asdfasdf
+	 
+The "someuser" user is used by the web app for db connections.
+	someuser : asdfasdf
+
+Pgpool control interface username:password:
+	You'll need to use these creds anytime you run pcp control commands against pgpool
+	Note that these commands are executed from a shell, not the psql interpreter.
+		pgpoolad : asdfasdf
+	The pcp.conf file expects the password to be MD5 hashed, so here's the hashed version:
+		pgpoolad:md5hashhere
+
+All of the integrations between PGPool instances or Postgres database servers are executed in the context of the "postgres" user on any given box.  In particular, rsa public keys are shared between the postgres users on app-server1+2 and postgres-db1+2, which permits remote shell commands to be executed via automations.  Again, these are executed only in the context of the "postgres" user.
+
+The "postgres" users on app-server1 and app-server2 have special sudo rights to facilitate pgpool High availability failover stuff:
+	The following has been added to the sudoers file:
+		Cmnd_Alias POSTGRES = /sbin/ifconfig, /sbin/ifup, /sbin/ifdown, /etc/init.d/pgpool, /sbin/arping
+		postgres ALL=(root)  NOPASSWD: POSTGRES
+	..and the sudo defaults that prevent execution sans TTY have been disabled.
+	
+###################
+
+PGPool Heartbeat and High Availability
+
+
+	HA in pgpool is provided by the integrated Watchdog feature.
+	We have two pgpool servers, one on app-server1 and one on app-server2.	app-server1 is the primary, app-server2 is the secondary.
+	Both pgpool servers are configured to listen to a single "Virtual" ip (10.1.7.100) that is bound to eth0:1.
+	On boot ONLY app-server1 binds to this IP.  app-server2 binds to it only via the failover mechanism.
+	The Virtual IP binding is the failover mechanism.  Here's the sequence of events:
+		Heartbeat runs on port 9000 on both servers, with a 10 second check period.
+		app-server2 detects a failure of app-server1.  
+		app-server1 falls on its sword and deactivates eth0:1
+		app-server2 clears its query cache.
+		app-server2 runs an ifconfig command to bring up eth0:1 and bind it to the shared Virtual IP
+		app-server2 uses Arping to tell all of the web and app servers to update their ARP caches
+		When (and if) app-server1 comes back to life, pgpool does NOT reactivate eth0:1 until manually told to do so.
+
+Pgpool Manual failover procedure:
+
+		In the event that you need to take the pgpool server on app-server1 offline and bring up app-server2, here's how:
+
+		app-server1 is the master pgpool server.
+			All pgpool connections shall be pointed at the IP 10.1.7.100
+			eth0:0 on app-server1 is bound to 10.1.7.100
+			eth0:0 starts on boot
+
+		app-server2 is the backup pgpool server.
+			pgpool is running on app-server2.  Connections will work if you point them at its eth0 IP
+			eth0:0 is NOT configured to start on boot
+
+		To fail over pgpool services to app-server2:
+
+		On app-server1:
+			$ sudo ifconfig eth0:0 down
+			$ sudo /etc/init.d/pgpool stop
+
+		On app-server2:	
+			$ sudo ifconfig eth0:0 inet 10.1.7.100 netmask 255.255.255.248
+
+			$ sudo arping -U 10.1.7.100 -w 1
+
+			$ sudo /etc/init.d/pgpool restart
+
+
+Database server Failover:
+	
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+Note that if you do this, you're going to cause your master database to be demoted and placed
+in a "degenerate" state, which will require you to go through the whole recovery process,
+which is non-trivial. 
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+This walkthrough assumes that postgres-db1 is the master (which is failing) and that postgres-db2 is the slave (which is taking over)
+
+	On app-server1 (or whichever pgpool server is active):
+		$ tail -f /var/log/pgpool.log
+		
+	On postgres-db1:
+		$ sudo /etc/init.d/postgresql-9.1 stop
+	
+	On app-server1:
+		...observe the connection failures via your taillog.
+		When the failover occurs, you'll see the following in /var/log/pgpool.log on app-server1:
+			2013-09-11 15:18:09 LOG:   pid 13444: failover: set new primary node: -1
+			2013-09-11 15:18:09 LOG:   pid 13444: failover: set new master node: 1
+			2013-09-11 15:18:09 LOG:   pid 13511: worker process received restart request
+			2013-09-11 15:18:09 LOG:   pid 13444: failover done. shutdown host 10.1.7.106(5432)
+			2013-09-11 15:18:10 LOG:   pid 13510: pcp child process received restart request
+			2013-09-11 15:18:10 LOG:   pid 13444: PCP child 13510 exits with status 256
+			2013-09-11 15:18:10 LOG:   pid 13444: fork a new PCP child pid 13603
+			
+		After pgpool fails over:
+			postgres=# show pool_nodes;
+			..and you should see status 3 on the failed node...
+				 node_id |    hostname     | port | status | lb_weight |  role   
+				---------+-----------------+------+--------+-----------+---------
+				 0       | 10.1.7.106 | 5432 | 3      | 0.500000  | standby
+				 1       | 10.1.7.107 | 5432 | 2      | 0.500000  | primary
+		
+	On postgres-db2:
+		postgres=# SELECT pg_is_in_recovery();
+		 pg_is_in_recovery 
+		-------------------
+		 f <--you're looking for the "False" boolean value, which indicates that it's the master.
+		
+		Also, look to see if the "recovery.conf" file has been renamed to recovery.done
+		
+	Now test the app and make sure that everything works correctly.
+		
+Resurrecting a degenerate server:
+
+	When a server has been put in a failure state, it takes some manual work to bring it back to life.
+	Although this process can be automated, at this stage of the game we are better off performing
+	recovery manually.  It's safer.  Here's how:
+	
+	NOTICE:  The rsync commands have been neutralized so that a heedless cut-n-paste won't destroy your servers
+	
+	Shut down the failed postgres daemon (assuming that it was running to begin with)
+	
+	On the master (postgres-db2 in this case) as the user "postgres", run:
+		$ psql -c "SELECT pg_start_backup('Streaming Replication', true)" postgres
+	
+	On the failed server (postgres-db1) in /var/lib/pgsql/9.1/data:
+		Move recovery.done to recovery.conf
+		
+	Be CAREFUL with this rsync command!  Especially the target directory!
+	The objective is to copy FROM the master TO the slave (the box in the degenerate state).
+	YOU CAN DESTROY A SERVER IF YOU GET THIS WRONG.
+	DID I MENTION THIS IS DANGEROUS?
+	This will probably take a minute or two.
+		postgres-db2: $ rsync -C -av --delete -e ssh --exclude postgresql.conf --exclude postmaster.pid \
+		--exclude postmaster.opts --exclude pg_log --exclude pg_xlog \
+		--exclude recovery.conf --exclude recovery.done --exclude .git \
+		/var/lib/pgsql/9.1/data/ postgres-dbDEAD:/var/lib/pgsql/9.1/data/
+	
+	The next 3 commands have to happen FAST if this is going to work!  Move smartly.
+	If the databases are under heavy write load, it'll get too far out of sync and you'll have to try again.
+	
+	Take the master out of backup mode
+		postgres-db2:$ psql -c "SELECT pg_stop_backup();"
+	
+	Sync the WAL log changes:
+		postgres-db2:$ rsync -av /var/lib/pgsql/9.1/data/pg_xlog postgres-dbDEAD:/var/lib/pgsql/9.1/data/
+		
+	And immediately start the standby server (in this case, postgres-db1)
+		postgres-db1:$ sudo /etc/init.d/postgresql-9.1 start
+		
+	Now, go and check the replication status on the master and make sure that everything is in sync.
+		postgres-db2: $ psql -c "select client_addr, state, sent_location, write_location, flush_location, replay_location from pg_stat_replication;"
+	    postgres-db2: $ ps -ef | grep [s]ender; ssh postgres-db1 ps -ef | grep [r]eceiver
+		
+	If the replication state is good, tell pgpool about it.
+	Use the show_pool_nodes command to identify your newly recovered node (in this case, app-server1 is node 0)
+	...and reattach the node (where the trailing 0 is the node ID):
+		app-server1$ pcp_attach_node 60 localhost 9898 pgpoolad vv763kd! 0
+
+	If the "show pool_nodes" query looks like this, you're in good shape.
+		app-server2: $ psql -h localhost -U dbadmin -p 5432 -W postgres
+		postgres=# show pool_nodes;
+		The output should look like this:
+		 node_id |    hostname     | port | status | lb_weight |  role   
+		---------+-----------------+------+--------+-----------+---------
+		 0       | 10.1.7.106 | 5432 | 2      | 0.500000  | standby
+		 1       | 10.1.7.107 | 5432 | 2      | 0.500000  | primary
+	
+
+########################
+Command Reference	
+		
+Execute this on the master to show the current streaming replication status:
+	postgres=# select client_addr, state, sent_location, write_location, flush_location, replay_location from pg_stat_replication;
+
+If a database is in a master state, this command should return (f) for false:
+	postgres=# SELECT pg_is_in_recovery();
+	Similarly, it will return (t) for true if the server is a slave.
+
+Finding pool status from pgpool (on app-server1 or 2):
+	Get Connected 1st.
+	$ psql -h localhost -U dbadmin -p 5432 -W postgres
+	 dbadmin : somepassword
+	
+	This will show you node status, in particular which is the primary and which is the standby:
+	postgres=# show pool_nodes;
+	 node_id |    hostname     | port | status | lb_weight |  role   
+	---------+-----------------+------+--------+-----------+---------
+	 0       | 10.1.7.106 | 5432 | 2      | 0.500000  | primary
+	 1       | 10.1.7.107 | 5432 | 2      | 0.500000  | standby
+	
+			Status is represented by a digit from [0 to 3].
+		    0 - This state is only used during the initialization. PCP will never display it.
+		    1 - Node is up. No connections yet.
+		    2 - Node is up. Connections are pooled.
+		    3 - Node is down.
+		
+To reattach a node after its been taken offline (where the trailing 0 is the node ID)
+	[postgres@app-server1 ~]$ pcp_attach_node 60 localhost 9898 pgpoolad password 0
+	
+To promote a node back to master in pgpool: (where the trailing 0 is the node ID)
+	[postgres@app-server1 ~]$ pcp_promote_node 60 localhost 9898 pgpoolad password 0
+	
+	postgres=# show pool_nodes;
+	The output should look like this:
+	 node_id |    hostname     | port | status | lb_weight |  role   
+	---------+-----------------+------+--------+-----------+---------
+	 0       | 10.1.7.106 | 5432 | 2      | 0.500000  | standby
+	 1       | 10.1.7.107 | 5432 | 2      | 0.500000  | primary
+
+Database Connection smoke tests:
+	(to test postgres-db1) $ psql -h 10.1.7.106 -p 5432 -U someuser -W -l 
+	(to test postgres-db2) $ $ psql -h 10.1.7.106 -p 5432 -U someuser -W -l
+	$ psql -h localhost -p 5432 -U someuser -W -l
+	Creds:
+		someuser : someuserpassword
+	The "someuser" user is also used by the web app for db connections.
+
+
+You can verify replication via the following.  Execute it as "postgres" on postgres-db1
+	postgres@postgres-db1$ ps -ef | grep [s]ender; ssh postgres-db2 ps -ef | grep [r]eceiver
+
+	The output should look like the following:  note that the "Streaming 4/190B150" bit should be identical on both.
+		postgres  7742  7657  0 13:42 ?        00:00:00 postgres: wal sender process postgres 10.1.7.107(51322) streaming 4/190B150
+		postgres 10299 10291  0 13:42 ?        00:00:00 postgres: wal receiver process   streaming 4/190B150
+
+	A tidier command if you need to script a check would be:
+	 	$ ps -ef | grep [s]ender | awk '{print $14,$15}'; ssh postgres-db2 ps -ef | grep [r]eceiver | awk '{print $12,$13}'
+
+			
+###################
+
+PGPOOL Specific configs:
+
+	pgpool executes as the "postgres" user on app-server1 and app-server2.
+
+	The Master->Slave configuration settings were based upon those in /usr/share/pgpool-II/pgpool.conf.sample-stream 
+
+	Black function lists for load balancing:
+		black_function_list = 'currval,lastval,nextval,setval'
+
+	Pgpool executes health checks against all postgres servers, and will trigger failures if needed.
+	Current timeouts are VERY conservative 
+		checks every 60 seconds
+		20 seconds before failure marked
+		3 retries before failover
+	Once we're super-confident of our failover process, these can be upped.
+		# Health check user
+		health_check_user = 'healthcheck'
+		health_check_password = 'bighorriblepassword'
+
+	
+Postgres Failover Triggering
+
+	PgPool looks after failover triggers.  The failover_stream.sh script in /home/postgres/bin on the pgpool servers (app1&2) is responsible for execution.
+
+	When a failover condition occurs, Pgpool executes this command:
+		/home/postgres/bin/failover_stream.sh %d %H /var/lib/pgsql/9.1/data/fail.trigger'
+			%d is the node_id
+			%H is the hostname of the new master node
+	...this command touches the failure trigger defined in recovery.conf, and causes the slave to convert itself to a master.
+	Pgpool removes the failed node from its active pool, and it won't talk to it again until you've told it to do so.
+	failover_stream.sh also sends root an email notification that it's rolled over so that someone can do something about it.
+	
+PGPool Heartbeat and High Availability
+
+	HA in pgpool is provided by the integrated Watchdog feature.
+	We have two pgpool servers, one on app-server1 and one on app-server2.	app-server1 is the primary, app-server2 is the secondary.
+	Both pgpool servers are configured to listen to a single "Virtual" ip (10.1.7.100) that is bound to eth0:1.
+	On boot ONLY app-server1 binds to this IP.  app-server2 binds to it only via the failover mechanism.
+	The Virtual IP binding is the failover mechanism.  Here's the sequence of events:
+		app-server2 detects a failure of app-server1.  
+		app-server1 falls on its sword and deactivates eth0:1
+		app-server2 clears its query cache.
+		app-server2 runs an ifconfig command to bring up eth0:1 and bind it to the shared Virtual IP
+		app-server2 uses Arping to tell all of the web and app servers to update their ARP caches
+		When (and if) app-server1 comes back to life, pgpool does NOT reactivate eth0:1 until manually told to do so.
+	
+
+
+Authorized_Keys file:
+
+{redacted}
+
+T

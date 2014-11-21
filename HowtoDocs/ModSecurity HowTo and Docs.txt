@@ -1,0 +1,105 @@
+ModSecurity HowTo and Docs
+
+Here's a quick overview of the ModSecurity Setup on www.snapshotinteractive.com (and friends!).  
+
+PLEASE PLEASE PLEASE be extra cautious when modifying mod_security rules.  A mistake can cause a lot of disruption to a lot of sites.
+
+First, we want to search for the problem in /var/log/modsec_audit.log.  It's a good idea to less this file out and get to know it's format before searching.
+
+Grepping the modsec audit log doesn't work so well, so we use a little perl-fu to help us out:
+
+	$ sudo /usr/local/bin/./modgrep.pl -f /var/log/modsec_audit.log  -s 'Your Search Terms'
+
+When you find the log entry that correlates to the error, look for the rule ID that it's triggering on.  Note that you'll often see more than one ruleid being triggered!
+
+Once you've got your ruleID, you'll need to make a whitelist rule for it:
+
+Whitelist rules live in /etc/httpd/modsecurity.d/activated_rules/whitelist_15_custom.conf
+
+This directory is under revision control via git.  please use...
+
+	# git log
+
+...while in this directory to see the latest changesets, and do the usual add/commit cycle when you make changes of substance.  Please mark commits with your initals so that we know who to blame when everything blows up :-)
+
+
+Editing the whitelist is, sadly, not simple.  Considerable research will be necessary.  It is quite easy to just shut a rule off everywhere, but this often defeats the purpose of the WAF to begin with.  Please make an effort to craft rules that allow stuff in a granular fashion - filtering by IP is good.  
+
+
+Please DO NOT edit any of the core rulesets!  The core rulesets are the ones that are symlinked in the activeated_rules directory  Put your exceptions in the whitelist_15_custom.conf file or another custom conf file.  Note that the numbers in the filenames matter - they set ruleset precedence.
+
+Once you're done adding rules, you've got to verify them.  IF YOUR RULES ARE BROKEN, AND YOU RELOAD APACHE, IT WILL BREAK THE WEB SERVER.  Which is bad.
+
+	$ sudo apachectl configtest
+	Syntax OK
+
+	$ sudo apachectl graceful
+
+Note the rules that I've implemented for various search bots in bots_16_custom.conf.  We don't want to just shut off the rules engine for any thing that says it's the Googlebot - an attacker could drive a truck right through our fancy WAF if we did that.  Instead, we add rules that score the Googlebot requests, and will trip the BAN rules if the bot is too aggressive.  
+
+There's a catch, though.  Since we're still logging the traffic, Fail2Ban gets annoyed and blocks it, anyway.  Boo.
+
+As such, we have to add a rule to the modsec.conf rules in /etc/fail2ban/filter.d to ignore these log entries:
+
+	[Definition]
+	failregex = \[.*?\]\s[\w-]*\s<HOST>\s
+	ignoreregex = severity \"INFO\"
+
+We can test our regexes with this:
+
+	$ sudo  fail2ban-regex /var/log/modsec_audit.log  "\[.*?\]\s[\w-]*\s<HOST>\s" "severity \"INFO\""
+
+It will vomit up a whole mess of info, but this is the bit we're looking for:
+
+	Results
+	=======
+
+	Failregex: 1051 total
+	|- #) [# of hits] regular expression
+	|  1) [1051] \[.*?\]\s[\w-]*\s<HOST>\s
+	`-
+
+	Ignoreregex: 93 total
+	|- #) [# of hits] regular expression
+	|  1) [93] severity "INFO"
+	`-
+
+...looks good.
+
+Here's an example of how the bot rules work in the logs - in this case, it's permitting the traffic.
+
+	--9e7ba445-A--
+	[03/Jul/2014:15:31:04 +0000] U7V3NWymN30AAD@@mLQAAAAF 66.249.69.168 44098 108.166.55.125 7080
+	--9e7ba445-B--
+	GET /about/work-at-score/ HTTP/1.0
+	Host: tnscore.org
+	X-Real-IP: 66.249.69.168
+	X-Forwarded-For: 66.249.69.168
+	X-Accel-Internal: /internal-nginx-static-location
+	Connection: close
+	Accept: */*
+	From: googlebot(at)googlebot.com
+	Accept-Encoding: gzip,deflate
+	User-Agent: Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)
+	If-Modified-Since: Thu, 03 Jul 2014 06:12:10 GMT
+
+	--9e7ba445-F--
+	HTTP/1.1 200 OK
+	X-Pingback: http://tnscore.org/xmlrpc.php
+	Link: <http://tnscore.org/?p=265>; rel=shortlink
+	Set-Cookie: wfvt_3147612007=53b57737c17b8; expires=Thu, 03-Jul-2014 16:01:03 GMT; path=/; httponly
+	X-Powered-By: PleskLin
+	Connection: close
+	Content-Type: text/html; charset=UTF-8
+
+	--9e7ba445-H--
+	Message:  [file "/etc/httpd/modsecurity.d/activated_rules/bots_16_custom.conf"] [line "8"] [id "910006"] [rev "2.2.5"] [msg "Google robot activity"] [severity "INFO"] Warning. Pattern match "(?:(?:gsa-crawler \\(enterprise; s4-e9lj2b82fjjaa; me\\@mycompany\\.com|adsbot-google \\(\\+http:\\/\\/www\\.google\\.com\\/adsbot\\.html)\\)|\\b(?:google(?:-sitemaps|bot)|mediapartners-google)\\b)" at REQUEST_HEADERS:User-Agent.
+	Apache-Handler: fcgid-script
+	Stopwatch: 1404401461865007 2352284 (- - -)
+	Stopwatch2: 1404401461865007 2352284; combined=678, p1=414, p2=247, p3=0, p4=0, p5=15, sr=131, sw=2, l=0, gc=0
+	WAF: ModSecurity for Apache/2.7.7 (http://www.modsecurity.org/); OWASP_CRS/2.2.9.
+	Server: Apache
+	Engine-Mode: "ENABLED"
+
+	--9e7ba445-Z--
+

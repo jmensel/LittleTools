@@ -1,5 +1,5 @@
-Minimum Downtime MySQL Master-Slave process.
-#######
+# Minimum Downtime MySQL Master-Slave process.
+============
 
 Here's an example proceedure for an (almost) zero downtime mysql cutover that I once performed.  The details have been modified to protect the innocent :-) 
 
@@ -112,31 +112,34 @@ In the meantime, this script will log in to each box and run the command, but yo
 
 Test everything, and make sure it's all good, and then test it again.
 It's best to do this with the following URL on each webXX box; this Node.js route will roundtrip mysql
+
 			http://10.1.1.31/hlthchck
 			http://10.1.1.21/hlthchck
 			http://10.1.1.20/hlthchck
 			http://10.1.1.19/hlthchck
 			http://10.1.1.18/hlthchck
+
 The HAProxy stats page could also be useful in this process
+			
 			http://10.1.1.24/haproxy?stats
 
-{
-  "development": {
-    "host": "127.0.0.1",
-    "user": "root",
-    "password": "",	
-    "database": "BigBadDatabase",
-    "port": 3306
-  },
-  "production": {
-    "insecureAuth":"true",
-    "host": "10.1.1.2",
-    "user": "user",
-    "password": "biguglypassword",
-    "database": "BigBadDatabase",
-    "port": 3306
-  }
-}
+	{
+	  "development": {
+	    "host": "127.0.0.1",
+	    "user": "root",
+	    "password": "",	
+	    "database": "BigBadDatabase",
+	    "port": 3306
+	  },
+	  "production": {
+	    "insecureAuth":"true",
+	    "host": "10.1.1.2",
+	    "user": "user",
+	    "password": "biguglypassword",
+	    "database": "BigBadDatabase",
+	    "port": 3306
+	  }
+	}
 
 
 

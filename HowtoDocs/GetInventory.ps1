@@ -1,6 +1,6 @@
 # Created: 4.11.2013
 # Original Author : Peter Stone
-# Revised by JHM, CTI, to include authentication and active directory integration
+# Revised by John Mensel, to include authentication and active directory integration
 #########################################################################################################
 
 
@@ -1156,8 +1156,7 @@ Function ManualEntry {
 # Gather info from user.
 Write-Host "********************************" 	-ForegroundColor Green
 Write-Host "Computer Inventory Script" 			-ForegroundColor Green
-Write-Host "Blame JHM for this" 				-ForegroundColor Green
-Write-Host "Contact: jmensel@concepttechnologyinc.com" 	-ForegroundColor Green
+Write-Host "Blame John Mensel for this if something goes wrong" 				-ForegroundColor Green
 Write-Host "********************************" 	-ForegroundColor Green
 Write-Host " "
 Write-Host "Admin rights are required to enumerate information," 	-ForegroundColor Green

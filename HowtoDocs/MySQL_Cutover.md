@@ -97,23 +97,17 @@ Order of operations:
 	# Time to fix up the web servers:
 
 	 Rewrite mysql config file:
-		/root/somedomain/dbconf.json (updated copy below)
-
-		I tried to set up an ssh key between db03 and each web box, but...
-		The /root directory on the web servers has bad permissions and is world-readable, so the ssh daemon is wagging a finger at me and not allowing the keyed connection.
-		The somedomain node.js app runs out of root's home directory, and changing these permissions will break stuff, so I have left it alone.
-		It's notable that running the node server as root isn't a great idea - this should be running as a normal user.  Anyone that manages to do something nasty to the node app would be root, a condition I would like to prevent.   I've appended the node.js startup script below for reference.
-		The best practice here is to daemonize node.js, but that's a topic for another day.
+		/opt/somedomain/dbconf.json (updated copy below)
 
 		In the meantime, this script will log in to each box and run the command, but you'll have to enter a password each time.  Have your clipboard ready.
 		#!/bin/bash
 
 		# Makes a backup file and the performs an in-place edit of each Node.js db config file
-		ssh web01.somedomain.prod 'sed -i.db02 "s/10\.1\.6\.33/10\.1\.6\.34/g" /root/somedomain/dbconf.json'
-		ssh web02.somedomain.prod 'sed -i.db02 "s/10\.1\.6\.33/10\.1\.6\.34/g" /root/somedomain/dbconf.json'
-		ssh web03.somedomain.prod 'sed -i.db02 "s/10\.1\.6\.33/10\.1\.6\.34/g" /root/somedomain/dbconf.json'
-		ssh web04.somedomain.prod 'sed -i.db02 "s/10\.1\.6\.33/10\.1\.6\.34/g" /root/somedomain/dbconf.json'
-		ssh web05.somedomain.prod 'sed -i.db02 "s/10\.1\.6\.33/10\.1\.6\.34/g" /root/somedomain/dbconf.json'
+		ssh web01.somedomain.prod 'sed -i.db02 "s/10\.1\.6\.33/10\.1\.6\.34/g" /opt/somedomain/dbconf.json'
+		ssh web02.somedomain.prod 'sed -i.db02 "s/10\.1\.6\.33/10\.1\.6\.34/g" /opt/somedomain/dbconf.json'
+		ssh web03.somedomain.prod 'sed -i.db02 "s/10\.1\.6\.33/10\.1\.6\.34/g" /opt/somedomain/dbconf.json'
+		ssh web04.somedomain.prod 'sed -i.db02 "s/10\.1\.6\.33/10\.1\.6\.34/g" /opt/somedomain/dbconf.json'
+		ssh web05.somedomain.prod 'sed -i.db02 "s/10\.1\.6\.33/10\.1\.6\.34/g" /opt/somedomain/dbconf.json'
 		
 
 		Test everything, and make sure it's all good, and then test it again.

@@ -19,7 +19,7 @@ In General, you'll need:
 
 Order of operations:
 
-	Restart mysql daemon on server1 so that the master config can take effect and we can start binlogging
+Restart mysql daemon on server1 so that the master config can take effect and we can start binlogging
 
 	server1:# cd /etc
 	server1:# git commit -m "About to cut over MySQL config to master/slave" /etc/my.cnf
@@ -29,39 +29,39 @@ Order of operations:
 
 		mysql> FLUSH TABLES WITH READ LOCK;
 
-		DON'T CLOSE the Mysql prompt.  Wait until the mysql prompt comes back, which means that the flush is complete.
-		Open another shell to restart the daemon.
+DON'T CLOSE the Mysql prompt.  Wait until the mysql prompt comes back, which means that the flush is complete.
+Open another shell to restart the daemon.
 
 		server1:# service mysql restart
 
-	...make sure everything came back up OK.
+...make sure everything came back up OK.
 
-	Take a full backup of server1 with the following command.  Don't do this during peak hours.
-	Make sure that you pause the SafeBackup backup so that they don't collide.
+Take a full backup of server1 with the following command.  Don't do this during peak hours.
+Make sure that you pause the SafeBackup backup so that they don't collide.
 		
 		server1:# mysqldump --skip-lock-tables --single-transaction --flush-logs --hex-blob --master-data=2 -A  > /mnt/data/dump.sql
 
-	...that's going to take a while...
+...that's going to take a while...
 
-	Push this backup to server2 and restore it.
+Push this backup to server2 and restore it.
 
 		server2:$ mysql < dump.sql
 
-	Get the Master Log Position
+Get the Master Log Position
 
-		server2:$ head dump.sql -n80 | grep "MASTER_LOG_POS"
+	server2:$ head dump.sql -n80 | grep "MASTER_LOG_POS"
 
-		mysql> 
-			CHANGE MASTER TO MASTER_HOST='10.1.6.33', MASTER_USER='replication',MASTER_PASSWORD='insertpasswordhere',MASTER_LOG_FILE='{{value from the grep command above}}', MASTER_LOG_POS='{{value from the grep command above}}';
+	mysql> 
+		CHANGE MASTER TO MASTER_HOST='10.1.6.33', MASTER_USER='replication',MASTER_PASSWORD='insertpasswordhere',MASTER_LOG_FILE='{{value from the grep command above}}', MASTER_LOG_POS='{{value from the grep command above}}';
 			START SLAVE;
 
-	Verify slave replication:
+Verify slave replication:
 		mysql> SHOW SLAVE STATUS \G;
 
 
-	# At this point, all of the pieces are set, and need to queue everyone up for the handout.
+# At this point, all of the pieces are set, and need to queue everyone up for the handout.
 
-	The following servers have persistent connections to server1:
+The following servers have persistent connections to server1:
 
 		[root@server1 tmp]# ss | grep mysql | awk '{print $5}' | cut -d':' -f1 | sort | uniq
 		10.1.5.18 (web05)
